@@ -536,6 +536,40 @@ export default function Dashboard({ result, onBack, onNewPrediction }) {
           </div>
         </div>
 
+        {/* Suggested Influencers */}
+        {result.suggested_influencers && result.suggested_influencers.length > 0 && (
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-8 border border-slate-200 dark:border-slate-700 mb-8">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
+                <Users className="w-5 h-5 text-blue-500" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">Suggested Influencers in {result.niche}</h3>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {result.suggested_influencers.map((inf, idx) => (
+                <div key={idx} className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
+                  <div className="font-bold text-lg text-slate-900 dark:text-white mb-2">{inf.name}</div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500 dark:text-slate-400">Followers:</span>
+                      <span className="font-semibold text-slate-900 dark:text-white">{Number(inf.followers).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500 dark:text-slate-400">Engagement:</span>
+                      <span className="font-semibold text-slate-900 dark:text-white">{Number(inf.engagement).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500 dark:text-slate-400">Historical ROI:</span>
+                      <span className="font-semibold text-emerald-600 dark:text-emerald-400">{inf.roi}%</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
           <button

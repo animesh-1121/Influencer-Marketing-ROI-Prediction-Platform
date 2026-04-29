@@ -4,7 +4,16 @@ import pickle
 import numpy as np
 import pandas as pd
 import os
-import google.generativeai as genai
+import warnings
+
+try:
+    import google.genai as genai
+except ImportError:
+    import google.generativeai as genai
+    warnings.warn(
+        'google.genai is not installed; falling back to deprecated google.generativeai package.',
+        FutureWarning,
+    )
 
 app = Flask(__name__)
 CORS(app)
@@ -39,13 +48,23 @@ GOAL_MULTIPLIERS = {
 }
 
 # ============================================================================
-# MODEL LOADING
+# MODEL AND DATA LOADING
 # ============================================================================
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models')
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 roi_model = None
 conversion_model = None
 niche_columns = None
+influencer_df = None
+
+try:
+    dataset_path = os.path.join(DATA_DIR, 'influencer_dataset.csv')
+    if os.path.exists(dataset_path):
+        influencer_df = pd.read_csv(dataset_path)
+        print("[OK] Influencer dataset loaded")
+except Exception as e:
+    print(f"Warning: Could not load influencer dataset - {e}")
 
 # Try to load models, but have fallback calculations if not available
 try:
@@ -103,19 +122,38 @@ def calculate_roi_formula(followers, engagement, budget, niche, goal):
     - Cost efficiency (lower cost per engagement is better)
     - Niche performance (some niches convert better)
     - Campaign goal (sales convert higher than awareness)
+    - Account size (micro-influencers have different dynamics)
     """
-    eng_ratio = engagement / followers
+    eng_ratio = engagement / followers if followers > 0 else 0
+
+    # Minimum follower threshold for credibility (micro-influencers start at ~1000)
+    # Accounts below 1000 followers are effectively unproven
+    follower_credibility = max(0, min(followers / 1000, 1.0))  # 0 at 0 followers, 1 at 1000+
 
     # Base conversion rate (industry typical 1-5%)
     base_conversion = 0.02  # 2%
 
     # Engagement quality multiplier (higher engagement = better conversion)
-    # 5% engagement is considered good
+    # 5% engagement is considered good for established accounts
     eng_quality = min(eng_ratio / 0.05, 2.0)  # Cap at 2x
 
     # Cost efficiency factor (lower cost per engagement = better ROI)
+    # Realistic range: $0.50 - $2.00 per engagement is good
     cost_per_eng = budget / engagement if engagement > 0 else budget
-    cost_efficiency = min(1000 / cost_per_eng, 3.0) if cost_per_eng > 0 else 1.0
+    
+    # Scale efficiency based on cost per engagement
+    if cost_per_eng > 100:
+        cost_efficiency = 0.1  # Heavy penalty
+    elif cost_per_eng > 2.00:
+        # Gradual penalty above $2.00
+        cost_efficiency = max(0.1, 2.0 - (cost_per_eng - 2.0) / 10.0)
+    elif cost_per_eng >= 0.50:
+        cost_efficiency = 2.0  # Good
+    elif cost_per_eng >= 0.05:
+        cost_efficiency = 3.0  # Excellent
+    else:
+        # Hyper efficient (very low cost)
+        cost_efficiency = min(10.0, 0.5 / max(cost_per_eng, 0.00001))
 
     # Niche multiplier
     niche_mult = NICHE_AVERAGES.get(niche, {}).get('conversion', 2.5) / 2.5
@@ -123,8 +161,8 @@ def calculate_roi_formula(followers, engagement, budget, niche, goal):
     # Goal multiplier
     goal_mult = GOAL_MULTIPLIERS.get(goal, {}).get('roi_mult', 1.0)
 
-    # Calculate estimated conversion rate
-    estimated_conversion = base_conversion * eng_quality * niche_mult * goal_mult
+    # Calculate estimated conversion rate with credibility penalty
+    estimated_conversion = base_conversion * eng_quality * cost_efficiency * niche_mult * goal_mult * follower_credibility
 
     # Estimated revenue (assuming $50 average order value)
     avg_order_value = 50
@@ -147,11 +185,22 @@ def calculate_roi_formula(followers, engagement, budget, niche, goal):
 
 def predict_roi(followers, engagement, budget, niche, goal):
     """Predict ROI using model or fallback to formula."""
-    if roi_model and niche_columns:
+    features = calculate_derived_features(followers, engagement, budget)
+    
+    # Check if inputs are significantly outside the training data distribution
+    # Training data: followers 10k-1M, engagement 1%-10%, budget ~ $100-$50k
+    is_out_of_bounds = (
+        followers < 5000 or followers > 2000000 or
+        engagement < 50 or engagement > 300000 or
+        budget < 50 or budget > 150000 or
+        features['cost_per_engagement'] > 50 or 
+        features['cost_per_engagement'] < 0.01 or
+        features['engagement_ratio'] > 0.5
+    )
+    
+    if roi_model and niche_columns and not is_out_of_bounds:
         try:
             # Prepare input for ML model
-            features = calculate_derived_features(followers, engagement, budget)
-
             input_dict = {
                 'Followers': [followers],
                 'Engagement': [engagement],
@@ -180,17 +229,26 @@ def predict_roi(followers, engagement, budget, niche, goal):
         except Exception as e:
             print(f"Model prediction failed: {e}, using fallback")
 
-    # Fallback to formula-based calculation
+    # Fallback to formula-based calculation for extreme inputs or missing model
     result = calculate_roi_formula(followers, engagement, budget, niche, goal)
     return result['roi_percentage']
 
 
 def predict_conversion_class(followers, engagement, budget, roi_percentage):
     """Predict conversion class using model or fallback logic."""
-    if conversion_model and niche_columns:
-        try:
-            features = calculate_derived_features(followers, engagement, budget)
+    features = calculate_derived_features(followers, engagement, budget)
+    
+    is_out_of_bounds = (
+        followers < 5000 or followers > 2000000 or
+        engagement < 50 or engagement > 300000 or
+        budget < 50 or budget > 150000 or
+        features['cost_per_engagement'] > 50 or 
+        features['cost_per_engagement'] < 0.01 or
+        features['engagement_ratio'] > 0.5
+    )
 
+    if conversion_model and niche_columns and not is_out_of_bounds:
+        try:
             input_dict = {
                 'Followers': [followers],
                 'Engagement': [engagement],
@@ -212,6 +270,7 @@ def predict_conversion_class(followers, engagement, budget, roi_percentage):
             print(f"Conversion model failed: {e}, using fallback")
 
     # Fallback: Based on ROI percentage
+
     if roi_percentage > 30:
         return 'High'
     elif roi_percentage > 10:
@@ -326,9 +385,6 @@ def generate_business_justification(budget, niche, goal, roi, risk, action, foll
             return f"This campaign projects negative ROI ({roi}%). Review your strategy carefully. {action}"
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-
         prompt = f"""As a marketing analyst, write a concise 2-sentence business assessment:
 
 Campaign Details:
@@ -342,8 +398,19 @@ Campaign Details:
 
 Write professionally, highlighting key risks and opportunities. Be direct and actionable."""
 
+        if hasattr(genai, 'Client'):
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=prompt,
+            )
+            return getattr(response, 'text', str(response))
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
         response = model.generate_content(prompt)
-        return response.text
+        return getattr(response, 'text', str(response))
     except Exception as e:
         return f"Campaign analysis for {niche} with {goal} objective: Expected ROI of {roi}% indicates {risk} risk. {action}"
 
@@ -351,6 +418,14 @@ Write professionally, highlighting key risks and opportunities. Be direct and ac
 # ============================================================================
 # API ROUTES
 # ============================================================================
+
+@app.route('/', methods=['GET'])
+def index():
+    """Helpful message for the root route."""
+    return jsonify({
+        'message': 'Welcome to the Influencer ROI Prediction API. The frontend is running on a separate React development server (typically http://localhost:5173).',
+        'status': 'active'
+    })
 
 @app.route('/api/predict', methods=['POST'])
 def predict_api():
@@ -401,6 +476,22 @@ def predict_api():
             action, followers, engagement
         )
 
+        # Get top matching influencers
+        suggested_influencers = []
+        if influencer_df is not None:
+            niche_df = influencer_df[influencer_df['Niche'] == niche].copy()
+            if not niche_df.empty:
+                predicted_roi_decimal = roi_percentage / 100.0
+                niche_df['roi_diff'] = abs(niche_df['ROI'] - predicted_roi_decimal)
+                top_matches = niche_df.nsmallest(3, 'roi_diff')
+                for _, row in top_matches.iterrows():
+                    suggested_influencers.append({
+                        'name': row['Influencer_Name'],
+                        'followers': int(row['Followers']),
+                        'engagement': int(row['Engagement']),
+                        'roi': round(row['ROI'] * 100, 2)
+                    })
+
         # Get niche data
         niche_data = NICHE_AVERAGES.get(niche, {})
 
@@ -434,7 +525,8 @@ def predict_api():
             'cost_per_eng': risk_data['cost_per_engagement'],
             'eng_ratio': risk_data['engagement_ratio'],
             'engagement_per_1000': round(features['engagement_per_1000'], 2),
-            'interaction_score': round(features['interaction_score'], 2)
+            'interaction_score': round(features['interaction_score'], 2),
+            'suggested_influencers': suggested_influencers
         })
 
     except Exception as e:
