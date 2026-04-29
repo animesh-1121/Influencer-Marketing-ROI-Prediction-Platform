@@ -11,9 +11,11 @@ export default function App() {
   const [error, setError] = useState(null);
   const [backendStatus, setBackendStatus] = useState('checking');
 
+  const API_BASE_URL = import.meta.env.MODE === 'development' ? 'http://127.0.0.1:5000' : '';
+
   // Check backend health on mount
   useEffect(() => {
-    fetch('http://127.0.0.1:5000/api/health')
+    fetch(`${API_BASE_URL}/api/health`)
       .then(res => {
         if (res.ok) {
           setBackendStatus('connected');
@@ -34,7 +36,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/predict', {
+      const response = await fetch(`${API_BASE_URL}/api/predict`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -54,7 +56,7 @@ export default function App() {
       setCurrentPage('dashboard');
     } catch (err) {
       if (err.message.includes('Failed to fetch')) {
-        setError('Cannot connect to backend server. Please make sure the backend is running on http://127.0.0.1:5000');
+        setError(`Cannot connect to backend server. Please make sure the backend is running.`);
       } else {
         setError(err.message);
       }
